@@ -1,0 +1,41 @@
+# MDK-ARM
+*.uvguix.*
+*.uvoptx
+*.scvd
+MDK-ARM/**/Objects
+MDK-ARM/**/Listings
+MDK-ARM/**/RTE
+MDK-ARM/*.uvguix.*
+
+# Build outputs
+*.o
+*.d
+*.crf
+*.htm
+*.dep
+*.map
+*.bak
+*.lnp
+*.lst
+*.ini
+*.iex
+*.sct
+*.axf
+*.hex
+*.bin
+
+# Debug files
+*.dbgconf
+*.log
+
+# Settings
+.vscode
+*.swp
+*.swo
+
+# Dependencies
+RTE/
+Drivers/
+
+# Generated files
+.mxproject 

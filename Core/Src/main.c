@@ -27,6 +27,8 @@
 #include "stm32f1xx_hal_i2c.h"
 #include "mpu6050.h"
 #include "loop_profiler.h"
+#include "gps_time.h"
+#include "nmea_min.h"
 #include <stdint.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -54,6 +56,10 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 MPU6050_Device g_mpu;
+GpsTime gps_time;
+static uint8_t uart2_rx;
+static char nmea_buf[128];
+static volatile uint16_t nmea_len = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -114,7 +120,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   /* Using HAL_GetTick() for time since boot; no counter needed */
-  char msg[128];
+  char msg[192];
   char boot[160];
   snprintf(boot, sizeof(boot),
            "\r\nBOOT sys=%lu Hz hclk=%lu Hz pclk1=%lu Hz pclk2=%lu Hz\r\n",
@@ -127,6 +133,9 @@ int main(void)
   /* Initialize loop profiler for 100 Hz (10000 us) */
   LoopProfiler profiler;
   loop_profiler_init(&profiler, 10000u);
+  gps_time_init(&gps_time);
+  /* Start UART2 RX interrupt for NMEA (GPGGA) */
+  HAL_UART_Receive_IT(&huart2, &uart2_rx, 1);
   for (uint8_t a = 0x03; a <= 0x77; a++) {
     if (HAL_I2C_IsDeviceReady(&hi2c1, a<<1, 1, 10) == HAL_OK) {
       sprintf(msg, "Found I2C addr 0x%02X\r\n", a);
@@ -177,16 +186,25 @@ int main(void)
     unsigned long ms  = now % 1000UL;
 #ifdef HAL_I2C_MODULE_ENABLED
     loop_profiler_begin(&profiler);
+    int64_t gps_sec; uint32_t gps_us; bool gps_ok = gps_time_now(&gps_time, &gps_sec, &gps_us);
     if (mpu6050_read_f(&g_mpu, &ax, &ay, &az, &t, &gx, &gy, &gz) == HAL_OK)
     {
-      sprintf(msg, "[%lu.%03lu s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
-              sec, ms, ax, ay, az, t, gx, gy, gz);
+      GpsTimeState st = gps_time_get_state(&gps_time);
+      const char *st_str = gps_time_state_str(st);
+      if (gps_ok) {
+        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPS %lld.%06u | %s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
+                 sec, ms, (long long)gps_sec, (unsigned)gps_us, st_str,
+                 ax, ay, az, t, gx, gy, gz);
+      } else {
+        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPS ----.------ | %s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
+                 sec, ms, st_str, ax, ay, az, t, gx, gy, gz);
+      }
     }
     else
     {
-      sprintf(msg, "[%lu.%03lu s] I2C read error\r\n", sec, ms);
+      snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s] I2C read error\r\n", sec, ms);
       uint32_t err = HAL_I2C_GetError(&hi2c1);
-      sprintf(msg, "[%lu.%03lu s] I2C error=0x%08lX\r\n", sec, ms, (unsigned long)err);
+      snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s] I2C error=0x%08lX\r\n", sec, ms, (unsigned long)err);
       uart_broadcast(msg);
     }
     loop_profiler_end(&profiler);
@@ -353,6 +371,7 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -361,13 +380,52 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin : PPS_Pin */
+  GPIO_InitStruct.Pin = pps_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(pps_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == GPIO_PIN_4) { /* PA4 PPS */
+    gps_time_on_pps_isr(&gps_time);
+  }
+}
+/* Add UART2 RX complete callback to parse NMEA and arm UTC for next PPS */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2) {
+    uint8_t byte = uart2_rx;
+    if (nmea_len < (uint16_t)(sizeof(nmea_buf) - 1)) {
+      nmea_buf[nmea_len++] = (char)byte;
+    } else {
+      nmea_len = 0; /* overflow, reset */
+    }
+    if (byte == '\n') {
+      if (nmea_len > 0) nmea_buf[nmea_len] = '\0';
+      if (nmea_len > 0 && nmea_buf[nmea_len-1] == '\r') nmea_buf[nmea_len-1] = '\0';
+      int hh, mm, ss, us;
+      if (nmea_len > 10 && nmea_buf[0] == '$' &&
+          nmea_parse_gga_time(nmea_buf, &hh, &mm, &ss, &us)) {
+        int64_t sec_of_day = (int64_t)hh * 3600 + (int64_t)mm * 60 + (int64_t)ss;
+        gps_time_set_utc_on_next_pps(&gps_time, sec_of_day);
+      }
+      nmea_len = 0;
+    }
+    HAL_UART_Receive_IT(&huart2, &uart2_rx, 1);
+  }
+}
 /* USER CODE END 4 */
 
 /**

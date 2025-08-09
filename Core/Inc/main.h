@@ -57,6 +57,9 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define pps_Pin GPIO_PIN_4
+#define pps_GPIO_Port GPIOA
+#define PPS_EXTI_IRQn EXTI4_IRQn
 
 /* USER CODE BEGIN Private defines */
 #define UART1_TX_Pin GPIO_PIN_9

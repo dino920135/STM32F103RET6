@@ -401,6 +401,21 @@
               <FilePath>../Core/Src/mpu6050.c</FilePath>
             </File>
             <File>
+              <FileName>loop_profiler.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\loop_profiler.c</FilePath>
+            </File>
+            <File>
+              <FileName>gps_time.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\gps_time.c</FilePath>
+            </File>
+            <File>
+              <FileName>nmea_min.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\nmea_min.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
@@ -414,11 +429,6 @@
               <FileName>stm32f1xx_hal_msp.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_hal_msp.c</FilePath>
-            </File>
-            <File>
-              <FileName>loop_profiler.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Core\Src\loop_profiler.c</FilePath>
             </File>
           </Files>
         </Group>

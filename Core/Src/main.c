@@ -26,6 +26,7 @@
 #include "stm32f1xx_hal_uart.h"
 #include "stm32f1xx_hal_i2c.h"
 #include "mpu6050.h"
+#include "loop_profiler.h"
 #include <stdint.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -122,6 +123,10 @@ int main(void)
            (unsigned long)HAL_RCC_GetPCLK1Freq(),
            (unsigned long)HAL_RCC_GetPCLK2Freq());
   uart_broadcast(boot);
+
+  /* Initialize loop profiler for 100 Hz (10000 us) */
+  LoopProfiler profiler;
+  loop_profiler_init(&profiler, 10000u);
   for (uint8_t a = 0x03; a <= 0x77; a++) {
     if (HAL_I2C_IsDeviceReady(&hi2c1, a<<1, 1, 10) == HAL_OK) {
       sprintf(msg, "Found I2C addr 0x%02X\r\n", a);
@@ -171,6 +176,7 @@ int main(void)
     unsigned long sec = now / 1000UL;
     unsigned long ms  = now % 1000UL;
 #ifdef HAL_I2C_MODULE_ENABLED
+    loop_profiler_begin(&profiler);
     if (mpu6050_read_f(&g_mpu, &ax, &ay, &az, &t, &gx, &gy, &gz) == HAL_OK)
     {
       sprintf(msg, "[%lu.%03lu s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
@@ -183,11 +189,21 @@ int main(void)
       sprintf(msg, "[%lu.%03lu s] I2C error=0x%08lX\r\n", sec, ms, (unsigned long)err);
       uart_broadcast(msg);
     }
+    loop_profiler_end(&profiler);
     
 #else
     sprintf(msg, "[%lu.%03lu s] I2C not enabled\r\n", sec, ms);
 #endif
     uart_broadcast(msg);
+
+    /* Every 100 samples, print loop timing stats */
+    uint32_t min_us, avg_us, max_us, last_us, slack_us; float load_pct;
+    uint32_t cnt = loop_profiler_get_stats_us(&profiler, &min_us, &avg_us, &max_us, &last_us, &slack_us, &load_pct);
+    if ((cnt % 100u) == 0u && cnt != 0u) {
+      snprintf(msg, sizeof(msg), "loop_us min/avg/max/last=%u/%u/%u/%u, slack=%u, load=%.1f%%\r\n",
+               min_us, avg_us, max_us, last_us, slack_us, load_pct);
+      uart_broadcast(msg);
+    }
   }
   /* USER CODE END 3 */
 }

@@ -415,6 +415,11 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_hal_msp.c</FilePath>
             </File>
+            <File>
+              <FileName>loop_profiler.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\loop_profiler.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -618,5 +623,14 @@
     </components>
     <files/>
   </RTE>
+
+  <LayerInfo>
+    <Layers>
+      <Layer>
+        <LayName>STM32F103RET6</LayName>
+        <LayPrjMark>1</LayPrjMark>
+      </Layer>
+    </Layers>
+  </LayerInfo>
 
 </Project>

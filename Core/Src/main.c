@@ -24,7 +24,10 @@
 #include "string.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_uart.h"
+#include "stm32f1xx_hal_i2c.h"
+#include "mpu6050.h"
 #include <stdint.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,22 +46,36 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-USART_HandleTypeDef husart1;
+I2C_HandleTypeDef hi2c1;
+
+UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+MPU6050_Device g_mpu;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_USART1_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void uart_broadcast(const char *text)
+{
+  if (huart1.Instance != NULL) {
+    (void)HAL_UART_Transmit(&huart1, (uint8_t*)text, strlen(text), 200);
+  }
+  if (huart2.Instance != NULL) {
+    (void)HAL_UART_Transmit(&huart2, (uint8_t*)text, strlen(text), 200);
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -90,10 +107,56 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
-  /* USER CODE BEGIN 2 */
   MX_GPIO_Init();
-  MX_USART1_Init();
-  char *hello = "Hello World\r\n";
+  MX_USART1_UART_Init();
+  MX_I2C1_Init();
+  MX_USART2_UART_Init();
+  /* USER CODE BEGIN 2 */
+  /* Using HAL_GetTick() for time since boot; no counter needed */
+  char msg[128];
+  char boot[160];
+  snprintf(boot, sizeof(boot),
+           "\r\nBOOT sys=%lu Hz hclk=%lu Hz pclk1=%lu Hz pclk2=%lu Hz\r\n",
+           (unsigned long)HAL_RCC_GetSysClockFreq(),
+           (unsigned long)HAL_RCC_GetHCLKFreq(),
+           (unsigned long)HAL_RCC_GetPCLK1Freq(),
+           (unsigned long)HAL_RCC_GetPCLK2Freq());
+  uart_broadcast(boot);
+  for (uint8_t a = 0x03; a <= 0x77; a++) {
+    if (HAL_I2C_IsDeviceReady(&hi2c1, a<<1, 1, 10) == HAL_OK) {
+      sprintf(msg, "Found I2C addr 0x%02X\r\n", a);
+      uart_broadcast(msg);
+    }
+  }
+  /* If I2C1 is enabled/configured by CubeMX, try to detect MPU */
+#ifdef HAL_I2C_MODULE_ENABLED
+  if (mpu6050_detect(&g_mpu, &hi2c1) == HAL_OK)
+  {
+    (void)mpu6050_wake(&g_mpu);
+    /* Allow clock to stabilize */
+    HAL_Delay(100);
+    /* Configure DLPF=3 (~44 Hz accel/gyro BW) and 100 Hz sample rate */
+    (void)mpu6050_configure(&g_mpu,
+                            MPU6050_ACCEL_FS_2G,
+                            MPU6050_GYRO_FS_250DPS,
+                            3, /* dlpf_cfg */
+                            9  /* smplrt_div */);
+    /* Discard first sample after wake/config */
+    int16_t dx, dy, dz, dt, dgx, dgy, dgz;
+    (void)mpu6050_read_raw(&g_mpu, &dx, &dy, &dz, &dt, &dgx, &dgy, &dgz);
+    HAL_Delay(10);
+    sprintf(msg, "MPU detected at 0x%02X\r\n", (unsigned)(g_mpu.address >> 1));
+    uart_broadcast(msg);
+  }
+  else
+  {
+    sprintf(msg, "MPU not detected\r\n");
+    uart_broadcast(msg);
+  }
+#else
+  sprintf(msg, "I2C not enabled. Configure I2C1 in CubeMX.\r\n");
+  uart_broadcast(msg);
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,8 +166,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_USART_Transmit(&husart1, (uint8_t*)hello, strlen(hello), 1000);
-    HAL_Delay(1000);
+    float ax, ay, az, t, gx, gy, gz;
+    uint32_t now = HAL_GetTick();
+    unsigned long sec = now / 1000UL;
+    unsigned long ms  = now % 1000UL;
+#ifdef HAL_I2C_MODULE_ENABLED
+    if (mpu6050_read_f(&g_mpu, &ax, &ay, &az, &t, &gx, &gy, &gz) == HAL_OK)
+    {
+      sprintf(msg, "[%lu.%03lu s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
+              sec, ms, ax, ay, az, t, gx, gy, gz);
+    }
+    else
+    {
+      sprintf(msg, "[%lu.%03lu s] I2C read error\r\n", sec, ms);
+      uint32_t err = HAL_I2C_GetError(&hi2c1);
+      sprintf(msg, "[%lu.%03lu s] I2C error=0x%08lX\r\n", sec, ms, (unsigned long)err);
+      uart_broadcast(msg);
+    }
+    
+#else
+    sprintf(msg, "[%lu.%03lu s] I2C not enabled\r\n", sec, ms);
+#endif
+    uart_broadcast(msg);
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
@@ -146,11 +230,45 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USART1_Init(void)
+static void MX_USART1_UART_Init(void)
 {
 
   /* USER CODE BEGIN USART1_Init 0 */
@@ -160,22 +278,54 @@ static void MX_USART1_Init(void)
   /* USER CODE BEGIN USART1_Init 1 */
 
   /* USER CODE END USART1_Init 1 */
-  husart1.Instance = USART1;
-  husart1.Init.BaudRate = 115200;
-  husart1.Init.WordLength = USART_WORDLENGTH_8B;
-  husart1.Init.StopBits = USART_STOPBITS_1;
-  husart1.Init.Parity = USART_PARITY_NONE;
-  husart1.Init.Mode = USART_MODE_TX_RX;
-  husart1.Init.CLKPolarity = USART_POLARITY_LOW;
-  husart1.Init.CLKPhase = USART_PHASE_1EDGE;
-  husart1.Init.CLKLastBit = USART_LASTBIT_DISABLE;
-  if (HAL_USART_Init(&husart1) != HAL_OK)
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
 
 }
 
@@ -192,11 +342,16 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
 
 /**
   * @brief  This function is executed in case of error occurrence.

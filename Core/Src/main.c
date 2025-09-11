@@ -134,6 +134,8 @@ int main(void)
   LoopProfiler profiler;
   loop_profiler_init(&profiler, 10000u);
   gps_time_init(&gps_time);
+  /* Enable gradual delay compensation for better PPS-NMEA correlation */
+  gps_time_enable_delay_compensation(&gps_time, true);
   /* Start UART2 RX interrupt for NMEA (GPGGA) */
   HAL_UART_Receive_IT(&huart2, &uart2_rx, 1);
   for (uint8_t a = 0x03; a <= 0x77; a++) {
@@ -191,13 +193,14 @@ int main(void)
     {
       GpsTimeState st = gps_time_get_state(&gps_time);
       const char *st_str = gps_time_state_str(st);
+      uint32_t delay_us = gps_time_get_pps_nmea_delay_us(&gps_time);
       if (gps_ok) {
-        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPS %lld.%06u | %s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
-                 sec, ms, (long long)gps_sec, (unsigned)gps_us, st_str,
+        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPST %lld.%06u | %s | Delay:%uus] AX:%.3f AY:%.3f AZ:%.3f TEMP:%.2f C GX:%.2f GY:%.2f GZ:%.2f\r\n",
+                 sec, ms, (long long)gps_sec, (unsigned)gps_us, st_str, delay_us,
                  ax, ay, az, t, gx, gy, gz);
       } else {
-        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPS ----.------ | %s] AX:%.3f g AY:%.3f g AZ:%.3f g TEMP:%.2f C GX:%.2f dps GY:%.2f dps GZ:%.2f dps\r\n",
-                 sec, ms, st_str, ax, ay, az, t, gx, gy, gz);
+        snprintf(msg, sizeof(msg), "[CPU %lu.%03lu s | GPST ----.------ | %s | Delay:%uus] AX:%.3f AY:%.3f AZ:%.3f TEMP:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+                 sec, ms, st_str, delay_us, ax, ay, az, t, gx, gy, gz);
       }
     }
     else
@@ -415,11 +418,50 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (byte == '\n') {
       if (nmea_len > 0) nmea_buf[nmea_len] = '\0';
       if (nmea_len > 0 && nmea_buf[nmea_len-1] == '\r') nmea_buf[nmea_len-1] = '\0';
-      int hh, mm, ss, us;
-      if (nmea_len > 10 && nmea_buf[0] == '$' &&
-          nmea_parse_gga_time(nmea_buf, &hh, &mm, &ss, &us)) {
-        int64_t sec_of_day = (int64_t)hh * 3600 + (int64_t)mm * 60 + (int64_t)ss;
-        gps_time_set_utc_on_next_pps(&gps_time, sec_of_day);
+      
+      if (nmea_len > 10 && nmea_buf[0] == '$') {
+        int hh, mm, ss, us;
+        int dd, mm_date, yy;
+        
+        /* Try RMC first (has date info for seconds of week) */
+        if (nmea_parse_rmc_time_date(nmea_buf, &hh, &mm, &ss, &us, &dd, &mm_date, &yy)) {
+          int day_of_week = calculate_day_of_week(dd, mm_date, yy);
+          int64_t sec_of_day = (int64_t)hh * 3600 + (int64_t)mm * 60 + (int64_t)ss;
+          int64_t sec_of_week = sec_of_day + (int64_t)(day_of_week - 1) * 86400;
+          /* Convert UTC to GPS time (+18 seconds) */
+          sec_of_week += 18;
+          /* Handle week wraparound if needed */
+          if (sec_of_week >= 604800) {
+            sec_of_week -= 604800;
+          }
+          gps_time_set_utc_with_correlation(&gps_time, sec_of_week);
+        }
+        /* Fallback to GGA (seconds of day only - skip if no date available) */
+        else if (nmea_parse_gga_time(nmea_buf, &hh, &mm, &ss, &us)) {
+          /* Only use GGA if we already have a valid GPS time established */
+          GpsTimeState st = gps_time_get_state(&gps_time);
+          if (st == GPS_TIME_UTC_LOCKED || st == GPS_TIME_PPS_ONLY) {
+            /* Keep current seconds of week, just update the time portion */
+            int64_t current_sec_of_week = 0;
+            uint32_t current_us = 0;
+            if (gps_time_now(&gps_time, &current_sec_of_week, &current_us)) {
+              int64_t current_day_sec = current_sec_of_week % 86400;
+              int64_t new_day_sec = (int64_t)hh * 3600 + (int64_t)mm * 60 + (int64_t)ss;
+              /* Convert UTC to GPS time (+18 seconds) */
+              new_day_sec += 18;
+              /* Handle day wraparound if needed */
+              if (new_day_sec >= 86400) {
+                new_day_sec -= 86400;
+              }
+              int64_t day_diff = new_day_sec - current_day_sec;
+              int64_t new_sec_of_week = current_sec_of_week + day_diff;
+              /* Wrap around if needed */
+              if (new_sec_of_week < 0) new_sec_of_week += 604800;
+              if (new_sec_of_week >= 604800) new_sec_of_week -= 604800;
+              gps_time_set_utc_with_correlation(&gps_time, new_sec_of_week);
+            }
+          }
+        }
       }
       nmea_len = 0;
     }

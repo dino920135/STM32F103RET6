@@ -1,41 +1,111 @@
-# MDK-ARM
-*.uvguix.*
-*.uvoptx
-*.scvd
-MDK-ARM/**/Objects
-MDK-ARM/**/Listings
-MDK-ARM/**/RTE
-MDK-ARM/*.uvguix.*
+# Project
+.metadata/
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
 
-# Build outputs
-*.o
+# Created by https://www.gitignore.io/api/c,keil
+# Edit at https://www.gitignore.io/?templates=c,keil
+
+### C ###
+# Prerequisites
 *.d
-*.crf
-*.htm
-*.dep
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
 *.map
-*.bak
-*.lnp
-*.lst
-*.ini
-*.iex
-*.sct
-*.axf
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
 *.hex
-*.bin
 
 # Debug files
-*.dbgconf
-*.log
+*.dSYM/
+*.su
+*.idb
+*.pdb
 
-# Settings
-.vscode
-*.swp
-*.swo
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
 
-# Dependencies
-RTE/
-Drivers/
+### Keil ###
+# something maybe need to add
+# *.bat  # generate batch file
+# output/project_name # uv project generate without file ext
+# *.SRC # generate source file
+# *.src
 
-# Generated files
-.mxproject 
+# Prerequisites
+*.dep
+# Object files
+*.OBJ
+
+# Listing Files
+*.COD
+*.cod
+*.[Ii]
+*.LST
+*.lst
+*.MAP
+*.[Mm]51
+*.[Mm]66
+*.SCR
+*.scr
+
+# LINK output
+*.ABS
+
+# Libraries
+*.LIB
+*.crf
+
+
+# uv output
+*.lnp
+*.build_log.htm
+*.HEX
+
+
+# Build Files
+*._IA
+*.__[Ii]
+*._[Ii][Ii]
+
+# project
+*.uvgui.*
+*.uvguix.*
+*.uvoptx
+
+# End of https://www.gitignore.io/api/c,keil
